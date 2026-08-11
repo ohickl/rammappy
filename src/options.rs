@@ -1,9 +1,86 @@
 use pyo3::prelude::*;
 use pyo3_stub_gen::derive::gen_stub_pyclass;
 use rammap::align::map::{
-    AlignmentParams, ChainingParams, FilteringParams, MapOptions, PairedEndParams, ScoringParams,
-    SeedingParams,
+    AlignFlags, AlignmentParams, ChainingParams, FilteringParams, MapOptions, PairedEndParams,
+    ScoringParams, SeedingParams,
 };
+
+/// Stable Python constants for the behavioral bits carried by rammap.
+#[gen_stub_pyclass]
+#[pyclass(module = "rammappy._rammappy", name = "AlignFlags")]
+pub struct PyAlignFlags;
+
+#[pymethods]
+impl PyAlignFlags {
+    #[classattr]
+    const NO_DIAG: u64 = 0x001;
+    #[classattr]
+    const NO_DUAL: u64 = 0x002;
+    #[classattr]
+    const NO_QUAL: u64 = 0x010;
+    #[classattr]
+    const OUT_CIGAR: u64 = 0x020;
+    #[classattr]
+    const SPLICE: u64 = 0x080;
+    #[classattr]
+    const SPLICE_FOR: u64 = 0x100;
+    #[classattr]
+    const SPLICE_REV: u64 = 0x200;
+    #[classattr]
+    const NO_LJOIN: u64 = 0x400;
+    #[classattr]
+    const INDEPEND_SEG: u64 = 0x800;
+    #[classattr]
+    const SHORT_READ: u64 = 0x1000;
+    #[classattr]
+    const FRAG_MODE: u64 = 0x2000;
+    #[classattr]
+    const NO_PRINT_2ND: u64 = 0x4000;
+    #[classattr]
+    const EQX: u64 = 0x8000;
+    #[classattr]
+    const LONG_CIGAR: u64 = 0x10000;
+    #[classattr]
+    const SOFTCLIP: u64 = 0x20000;
+    #[classattr]
+    const SPLICE_FLANK: u64 = 0x40000;
+    #[classattr]
+    const FOR_ONLY: u64 = 0x100000;
+    #[classattr]
+    const REV_ONLY: u64 = 0x200000;
+    #[classattr]
+    const HEAP_SORT: u64 = 0x400000;
+    #[classattr]
+    const ALL_CHAINS: u64 = 0x800000;
+    #[classattr]
+    const NO_END_FLT: u64 = 0x1000000;
+    #[classattr]
+    const HARD_MASK_LEVEL: u64 = 0x2000000;
+    #[classattr]
+    const SAM_HIT_ONLY: u64 = 0x4000000;
+    #[classattr]
+    const PAF_NO_HIT: u64 = 0x8000000;
+    #[classattr]
+    const NO_HASH_NAME: u64 = 0x40000000;
+    #[classattr]
+    const RMQ_CHAIN: u64 = 0x80000000;
+    #[classattr]
+    const QSTRAND: u64 = 0x100000000;
+    #[classattr]
+    const NO_INV: u64 = 0x200000000;
+    #[classattr]
+    const SPLICE_OLD: u64 = 0x400000000;
+    #[classattr]
+    const SECONDARY_SEQ: u64 = 0x800000000;
+    #[classattr]
+    const WEAK_PAIRING: u64 = 0x4000000000;
+    #[classattr]
+    const SR_RNA: u64 = 0x8000000000;
+    #[classattr]
+    const OUT_JUNC: u64 = 0x10000000000;
+    #[classattr]
+    const PAR_CHAIN: u64 = 0x20000000000;
+}
 
 #[gen_stub_pyclass]
 #[pyclass(module = "rammappy._rammappy", name = "SeedingParams")]
@@ -355,49 +432,50 @@ impl From<PyPairedEndParams> for PairedEndParams {
 
 #[gen_stub_pyclass]
 #[pyclass(module = "rammappy._rammappy", name = "MapOptions")]
-#[derive(Clone)]
 pub struct PyMapOptions {
     #[pyo3(get, set)]
-    pub seeding: PySeedingParams,
+    pub seeding: Py<PySeedingParams>,
     #[pyo3(get, set)]
-    pub chaining: PyChainingParams,
+    pub chaining: Py<PyChainingParams>,
     #[pyo3(get, set)]
-    pub scoring: PyScoringParams,
+    pub scoring: Py<PyScoringParams>,
     #[pyo3(get, set)]
-    pub alignment: PyAlignmentParams,
+    pub alignment: Py<PyAlignmentParams>,
     #[pyo3(get, set)]
-    pub filtering: PyFilteringParams,
+    pub filtering: Py<PyFilteringParams>,
     #[pyo3(get, set)]
-    pub pairing: PyPairedEndParams,
+    pub pairing: Py<PyPairedEndParams>,
+    /// Raw bitset preserving every rammap behavioral flag.
+    #[pyo3(get, set)]
+    pub flags: u64,
     #[pyo3(get, set)]
     pub mini_batch_size: i64,
 }
 
-impl From<MapOptions> for PyMapOptions {
-    fn from(c: MapOptions) -> Self {
-        Self {
-            seeding: c.seeding.into(),
-            chaining: c.chaining.into(),
-            scoring: c.scoring.into(),
-            alignment: c.alignment.into(),
-            filtering: c.filtering.into(),
-            pairing: c.pairing.into(),
+impl PyMapOptions {
+    pub fn from_map(py: Python<'_>, c: MapOptions) -> PyResult<Self> {
+        Ok(Self {
+            seeding: Py::new(py, PySeedingParams::from(c.seeding))?,
+            chaining: Py::new(py, PyChainingParams::from(c.chaining))?,
+            scoring: Py::new(py, PyScoringParams::from(c.scoring))?,
+            alignment: Py::new(py, PyAlignmentParams::from(c.alignment))?,
+            filtering: Py::new(py, PyFilteringParams::from(c.filtering))?,
+            pairing: Py::new(py, PyPairedEndParams::from(c.pairing))?,
+            flags: c.flags.bits(),
             mini_batch_size: c.mini_batch_size,
-        }
+        })
     }
-}
 
-impl From<PyMapOptions> for MapOptions {
-    fn from(p: PyMapOptions) -> Self {
+    pub fn into_map(&self, py: Python<'_>) -> MapOptions {
         MapOptions {
-            seeding: p.seeding.into(),
-            chaining: p.chaining.into(),
-            scoring: p.scoring.into(),
-            alignment: p.alignment.into(),
-            filtering: p.filtering.into(),
-            pairing: p.pairing.into(),
-            mini_batch_size: p.mini_batch_size,
-            ..MapOptions::default()
+            seeding: self.seeding.bind(py).borrow().clone().into(),
+            chaining: self.chaining.bind(py).borrow().clone().into(),
+            scoring: self.scoring.bind(py).borrow().clone().into(),
+            alignment: self.alignment.bind(py).borrow().clone().into(),
+            filtering: self.filtering.bind(py).borrow().clone().into(),
+            pairing: self.pairing.bind(py).borrow().clone().into(),
+            flags: AlignFlags::from_bits_retain(self.flags),
+            mini_batch_size: self.mini_batch_size,
         }
     }
 }
@@ -409,6 +487,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyAlignmentParams>()?;
     m.add_class::<PyFilteringParams>()?;
     m.add_class::<PyPairedEndParams>()?;
+    m.add_class::<PyAlignFlags>()?;
     m.add_class::<PyMapOptions>()?;
     Ok(())
 }

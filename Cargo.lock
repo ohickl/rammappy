@@ -665,9 +665,7 @@ dependencies = [
 
 [[package]]
 name = "rammap-core"
-version = "1.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "286b6bc960c5c48b37caed7f8ba516986868bb84514c2b480086b9a47a2c679e"
+version = "1.1.2"
 dependencies = [
  "anyhow",
  "bincode",

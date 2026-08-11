@@ -2,6 +2,7 @@ from . import align, fasta, sketch
 
 # Re-export common classes for convenience
 from .align import (
+    AlignFlags,
     Aligner,
     CigarElement,
     CigarOp,
@@ -19,6 +20,7 @@ __all__ = [
     "sketch",
     "fasta",
     "Aligner",
+    "AlignFlags",
     "Preset",
     "Mapping",
     "MappingIterator",

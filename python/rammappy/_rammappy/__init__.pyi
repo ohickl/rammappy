@@ -6,8 +6,8 @@ import enum
 import os
 import pathlib
 import typing
-
 __all__ = [
+    "AlignFlags",
     "Aligner",
     "AlignmentParams",
     "ChainingParams",
@@ -36,6 +36,47 @@ __all__ = [
 ]
 
 @typing.final
+class AlignFlags:
+    r"""
+    Stable Python constants for the behavioral bits carried by rammap.
+    """
+    NO_DIAG: builtins.int
+    NO_DUAL: builtins.int
+    NO_QUAL: builtins.int
+    OUT_CIGAR: builtins.int
+    SPLICE: builtins.int
+    SPLICE_FOR: builtins.int
+    SPLICE_REV: builtins.int
+    NO_LJOIN: builtins.int
+    INDEPEND_SEG: builtins.int
+    SHORT_READ: builtins.int
+    FRAG_MODE: builtins.int
+    NO_PRINT_2ND: builtins.int
+    EQX: builtins.int
+    LONG_CIGAR: builtins.int
+    SOFTCLIP: builtins.int
+    SPLICE_FLANK: builtins.int
+    FOR_ONLY: builtins.int
+    REV_ONLY: builtins.int
+    HEAP_SORT: builtins.int
+    ALL_CHAINS: builtins.int
+    NO_END_FLT: builtins.int
+    HARD_MASK_LEVEL: builtins.int
+    SAM_HIT_ONLY: builtins.int
+    PAF_NO_HIT: builtins.int
+    NO_HASH_NAME: builtins.int
+    RMQ_CHAIN: builtins.int
+    QSTRAND: builtins.int
+    NO_INV: builtins.int
+    SPLICE_OLD: builtins.int
+    SECONDARY_SEQ: builtins.int
+    WEAK_PAIRING: builtins.int
+    SR_RNA: builtins.int
+    OUT_JUNC: builtins.int
+    PAR_CHAIN: builtins.int
+    ...
+
+@typing.final
 class Aligner:
     r"""
     The `Aligner` orchestrates the alignment process.
@@ -49,20 +90,14 @@ class Aligner:
         >>> for mapping in aligner.map(b"query1", b"ATGC..."):
         ...     print(mapping.score)
     """
-
     @property
     def options(self) -> MapOptions:
         r"""
-        Returns the sequence names in the index.
-
-        Returns:
-            list[str]: The list of sequence names.
         Get the current mapping options.
 
         Returns:
             MapOptions: A copy of the current mapping options.
         """
-
     @options.setter
     def options(self, value: MapOptions) -> None:
         r"""
@@ -71,17 +106,18 @@ class Aligner:
         Args:
             opts (MapOptions): The new mapping options to apply.
         """
-
     @property
     def seq_names(self) -> builtins.list[builtins.str]: ...
-    def __new__(
-        cls,
-        index: Index,
-        preset: typing.Optional[Preset] = Preset.MapOnt,
-        do_cigar: builtins.bool = True,
-        do_cs: builtins.bool = True,
-        do_md: builtins.bool = True,
-    ) -> Aligner:
+    @staticmethod
+    def from_strainxpress_sr_ava(index: Index, threads: builtins.int = 1) -> Aligner:
+        r"""
+        Build an aligner with the StrainXpress short-read all-vs-all settings.
+
+        This mirrors the parent project's Minimap2 contract: short-read mode,
+        all chains, no exact diagonal, and the explicit scoring/filter values
+        used by its oracle command. The index must already use k=21 and w=11.
+        """
+    def __new__(cls, index: Index, preset: typing.Optional[Preset] = Preset.MapOnt, do_cigar: builtins.bool = True, do_cs: builtins.bool = True, do_md: builtins.bool = True, threads: builtins.int = 1) -> Aligner:
         r"""
         Create a new aligner instance using an already built index.
 
@@ -95,12 +131,8 @@ class Aligner:
         Returns:
             Aligner: The initialized aligner object.
         """
-
     @staticmethod
-    def from_fasta(
-        path: builtins.str | os.PathLike | pathlib.Path,
-        preset: typing.Optional[Preset] = Preset.MapOnt,
-    ) -> Aligner:
+    def from_fasta(path: builtins.str | os.PathLike | pathlib.Path, preset: typing.Optional[Preset] = Preset.MapOnt, threads: builtins.int = 1) -> Aligner:
         r"""
         Create an aligner from a FASTA file.
 
@@ -111,12 +143,8 @@ class Aligner:
         Returns:
             Aligner: The initialized aligner object.
         """
-
     @staticmethod
-    def from_index(
-        path: builtins.str | os.PathLike | pathlib.Path,
-        preset: typing.Optional[Preset] = Preset.MapOnt,
-    ) -> Aligner:
+    def from_index(path: builtins.str | os.PathLike | pathlib.Path, preset: typing.Optional[Preset] = Preset.MapOnt, threads: builtins.int = 1) -> Aligner:
         r"""
         Create an aligner from an index file.
 
@@ -127,7 +155,6 @@ class Aligner:
         Returns:
             Aligner: The initialized aligner object.
         """
-
     def map(self, query_name: bytes, query_seq: bytes) -> MappingIterator:
         r"""
         Maps a single query sequence sequentially to the targets.
@@ -139,10 +166,7 @@ class Aligner:
         Returns:
             MappingIterator: An iterator over the generated mappings.
         """
-
-    def map_batch(
-        self, queries: typing.Sequence[tuple[bytes, bytes]]
-    ) -> builtins.list[MappingIterator]:
+    def map_batch(self, queries: typing.Sequence[tuple[bytes, bytes]]) -> builtins.list[MappingIterator]:
         r"""
         Performs highly parallelized batch alignments mapping over multiple queries.
 
@@ -150,11 +174,21 @@ class Aligner:
 
         Args:
             queries (list[tuple[bytes, bytes]]): A list of tuples containing `(name, sequence)` as bytes.
-
         Returns:
             list[MappingIterator]: A list of iterators, one for each query sequence.
         """
+    def map_batch_packed(self, queries: typing.Sequence[tuple[bytes, bytes]]) -> tuple[bytes, builtins.list[builtins.int]]:
+        r"""
+        Map queries into a compact little-endian numeric buffer.
 
+        The returned pair is `(records, offsets)`. `records` is a fixed-width
+        buffer with 93-byte records; `offsets[i]..offsets[i + 1]` identifies the
+        byte range for query `i`. The record fields are query ID, target ID,
+        target length, query start/end, target start/end, matches, block
+        length, edit distance, score, map quality, and strand. Python callers
+        can wrap `records` with `numpy.frombuffer` without per-mapping Python
+        objects or a copy.
+        """
     def load_junctions_bed(self, path: builtins.str | os.PathLike | pathlib.Path) -> None:
         r"""
         Load splice junctions from a BED file.
@@ -162,12 +196,7 @@ class Aligner:
         Args:
             path (os.PathLike | str): Path to the BED file.
         """
-
-    def load_junctions_spsc(
-        self,
-        path: builtins.str | os.PathLike | pathlib.Path,
-        scale: typing.Optional[builtins.float] = None,
-    ) -> None:
+    def load_junctions_spsc(self, path: builtins.str | os.PathLike | pathlib.Path, scale: typing.Optional[builtins.float] = None) -> None:
         r"""
         Load splice junctions from a SPSC file.
 
@@ -175,13 +204,7 @@ class Aligner:
             path (os.PathLike | str): Path to the SPSC file.
             scale (float | None): Optional scaling factor.
         """
-
-    def seq(
-        self,
-        name: builtins.str,
-        start: typing.Optional[builtins.int] = None,
-        end: typing.Optional[builtins.int] = None,
-    ) -> builtins.str:
+    def seq(self, name: builtins.str, start: typing.Optional[builtins.int] = None, end: typing.Optional[builtins.int] = None) -> builtins.str:
         r"""
         Returns the sequence for a given target name.
 
@@ -316,7 +339,6 @@ class CigarElement:
         len (int): Operation length.
         op (CigarOp): Operation type enum.
     """
-
     @property
     def len(self) -> builtins.int: ...
     @property
@@ -329,19 +351,16 @@ class FastaStreamer:
     `(name, seq)` pairs via `next_record`; flush the
     in-flight record (if any) at end-of-input via `finalize`.
     """
-
     def __new__(cls, rna_to_dna: builtins.bool = True) -> FastaStreamer: ...
     def push(self, chunk: bytes) -> None:
         r"""
         Feed a chunk of bytes. Records that complete inside this chunk are
         queued for `next_record`.
         """
-
     def next_record(self) -> typing.Optional[tuple[builtins.str, bytes]]:
         r"""
         Pop a completed record from the internal queue.
         """
-
     def finalize(self) -> None:
         r"""
         Flush the trailing partial line + the in-flight record. Call once after
@@ -355,18 +374,15 @@ class FastqStreamer:
     Streaming FASTQ parser. 4-line records: `@name`, sequence, `+`, quality.
     Quality scores are consumed and discarded; only `(name, seq)` is yielded.
     """
-
     def __new__(cls, rna_to_dna: builtins.bool = True) -> FastqStreamer: ...
     def push(self, chunk: bytes) -> None:
         r"""
         Feed a chunk of bytes.
         """
-
     def next_record(self) -> typing.Optional[tuple[builtins.str, bytes]]:
         r"""
         Pop a completed record from the internal queue.
         """
-
     def finalize(self) -> None:
         r"""
         Flush the trailing partial line + the in-flight record.
@@ -386,7 +402,6 @@ class FastxReader:
         >>> for record in reader:
         ...     print(f"{record.name}: {record.sequence}")
     """
-
     def __new__(cls, path: builtins.str | os.PathLike | pathlib.Path) -> FastxReader:
         r"""
         Open a FASTA/FASTQ file for reading.
@@ -400,7 +415,6 @@ class FastxReader:
         Raises:
             IOError: If the file cannot be opened.
         """
-
     def __iter__(self) -> FastxReader: ...
     def __next__(self) -> typing.Optional[Record]:
         r"""
@@ -409,10 +423,7 @@ class FastxReader:
         Yields:
             Record: The sequence record.
         """
-
-    def read_batch(
-        self, batch_size: builtins.int
-    ) -> tuple[builtins.list[tuple[builtins.str, bytes]], builtins.bool]:
+    def read_batch(self, batch_size: builtins.int) -> tuple[builtins.list[tuple[builtins.str, bytes]], builtins.bool]:
         r"""
         Read sequences until cumulative bases exceed batch_size.
         Returns (seqs, is_eof). Caller can call again for the next batch.
@@ -475,7 +486,6 @@ class Index:
         >>> index.save("my_index.mmi")
         >>> loaded_index = Index.load("my_index.mmi")
     """
-
     @property
     def kmer_size(self) -> builtins.int: ...
     @property
@@ -490,15 +500,8 @@ class Index:
         Returns:
             list[str]: The list of sequence names.
         """
-
     @staticmethod
-    def build(
-        seqs: typing.Sequence[tuple[bytes, bytes]],
-        w: builtins.int = 10,
-        k: builtins.int = 15,
-        is_hpc: builtins.bool = False,
-        max_occ: builtins.int = 50000,
-    ) -> Index:
+    def build(seqs: typing.Sequence[tuple[bytes, bytes]], w: builtins.int = 10, k: builtins.int = 15, is_hpc: builtins.bool = False, max_occ: builtins.int = 50000, threads: builtins.int = 1) -> Index:
         r"""
         Build an index from target sequences.
 
@@ -512,7 +515,6 @@ class Index:
         Returns:
             Index: The built index.
         """
-
     @staticmethod
     def load(path: builtins.str | os.PathLike | pathlib.Path) -> Index:
         r"""
@@ -524,7 +526,6 @@ class Index:
         Returns:
             Index: The loaded index.
         """
-
     def save(self, path: builtins.str | os.PathLike | pathlib.Path) -> None:
         r"""
         Save the index to a file.
@@ -532,7 +533,6 @@ class Index:
         Args:
             path (os.PathLike): The file path to save the index to.
         """
-
     def strip_sequences(self) -> None:
         r"""
         Strip sequences from the index to save memory.
@@ -543,13 +543,7 @@ class Index:
         Examples:
             >>> index.strip_sequences()
         """
-
-    def seq(
-        self,
-        name: builtins.str,
-        start: typing.Optional[builtins.int] = None,
-        end: typing.Optional[builtins.int] = None,
-    ) -> builtins.str:
+    def seq(self, name: builtins.str, start: typing.Optional[builtins.int] = None, end: typing.Optional[builtins.int] = None) -> builtins.str:
         r"""
         Returns the sequence for a given target name.
 
@@ -592,6 +586,16 @@ class MapOptions:
     @pairing.setter
     def pairing(self, value: PairedEndParams) -> None: ...
     @property
+    def flags(self) -> builtins.int:
+        r"""
+        Raw bitset preserving every rammap behavioral flag.
+        """
+    @flags.setter
+    def flags(self, value: builtins.int) -> None:
+        r"""
+        Raw bitset preserving every rammap behavioral flag.
+        """
+    @property
     def mini_batch_size(self) -> builtins.int: ...
     @mini_batch_size.setter
     def mini_batch_size(self, value: builtins.int) -> None: ...
@@ -628,13 +632,11 @@ class Mapping:
         cs (bytes | None): CS tag string, if requested.
         md (bytes | None): MD tag string, if requested.
     """
-
     @property
     def target_name(self) -> bytes:
         r"""
         Return the target name as Python `bytes`.
         """
-
     @property
     def target_start(self) -> builtins.int: ...
     @property
@@ -674,25 +676,21 @@ class Mapping:
         r"""
         Returns the optional CIGAR string as a lazy byte array.
         """
-
     @property
     def cigar_ops(self) -> typing.Optional[builtins.list[CigarElement]]:
         r"""
         Returns the structured CIGAR operations.
         """
-
     @property
     def cs(self) -> typing.Optional[bytes]:
         r"""
         Returns the optional cs string as a lazy byte array.
         """
-
     @property
     def md(self) -> typing.Optional[bytes]:
         r"""
         Returns the optional MD string as a lazy byte array.
         """
-
     def __str__(self) -> builtins.str: ...
     def __repr__(self) -> builtins.str: ...
 
@@ -704,9 +702,8 @@ class MappingIterator:
     Instead of allocating a list, we hold an iterator of Rust mappings
     and materialize Python wrapper objects only when requested via `next()`.
     """
-
     def __iter__(self) -> MappingIterator: ...
-    def __next__(self) -> typing.Optional[Mapping]: ...
+    def __next__(self) -> typing.Optional[_rammappy.Mapping]: ...
 
 @typing.final
 class Minimizer:
@@ -719,7 +716,6 @@ class Minimizer:
         x (int): The 64-bit integer combining the genomic coordinate and other metadata.
         y (int): The 64-bit hash value of the k-mer.
     """
-
     @property
     def x(self) -> builtins.int: ...
     @property
@@ -738,7 +734,6 @@ class MinimizerSketcher:
         >>> sketcher.sketch(b"ATGCGTACGATCGATC")
         [<Minimizer object at ...>, ...]
     """
-
     def __new__(cls, k: builtins.int, w: builtins.int) -> MinimizerSketcher:
         r"""
         Initialize a new MinimizerSketcher.
@@ -750,7 +745,6 @@ class MinimizerSketcher:
         Returns:
             MinimizerSketcher: The initialized sketcher.
         """
-
     def sketch(self, seq: bytes) -> builtins.list[Minimizer]:
         r"""
         Extract minimizers from a byte string sequence.
@@ -790,10 +784,7 @@ class RandstrobeSketcher:
         >>> sketcher.sketch(b"ATGCGTACGATCGATC")
         [<Minimizer object at ...>, ...]
     """
-
-    def __new__(
-        cls, k: builtins.int, w_min: builtins.int, w_max: builtins.int
-    ) -> RandstrobeSketcher:
+    def __new__(cls, k: builtins.int, w_min: builtins.int, w_max: builtins.int) -> RandstrobeSketcher:
         r"""
         Create a new RandstrobeSketcher.
 
@@ -805,7 +796,6 @@ class RandstrobeSketcher:
         Returns:
             RandstrobeSketcher: The initialized sketcher.
         """
-
     def sketch(self, seq: bytes) -> builtins.list[Minimizer]:
         r"""
         Extract randstrobes from a byte string sequence.
@@ -822,7 +812,6 @@ class Record:
     r"""
     A sequence record from a FASTA or FASTQ file.
     """
-
     @property
     def name(self) -> builtins.str: ...
     @property
@@ -831,13 +820,7 @@ class Record:
     def sequence(self) -> bytes: ...
     @property
     def quality(self) -> typing.Optional[bytes]: ...
-    def __new__(
-        cls,
-        name: builtins.str,
-        description: typing.Optional[builtins.str],
-        sequence: typing.Sequence[builtins.int],
-        quality: typing.Optional[typing.Sequence[builtins.int]] = None,
-    ) -> Record: ...
+    def __new__(cls, name: builtins.str, description: typing.Optional[builtins.str], sequence: typing.Sequence[builtins.int], quality: typing.Optional[typing.Sequence[builtins.int]] = None) -> Record: ...
     def __repr__(self) -> builtins.str: ...
 
 @typing.final
@@ -931,7 +914,6 @@ class SyncmerSketcher:
         >>> sketcher.sketch(b"ATGCGTACGATCGATC")
         [<Minimizer object at ...>, ...]
     """
-
     def __new__(cls, k: builtins.int, s: builtins.int) -> SyncmerSketcher:
         r"""
         Create a new SyncmerSketcher.
@@ -943,7 +925,6 @@ class SyncmerSketcher:
         Returns:
             SyncmerSketcher: The initialized sketcher.
         """
-
     def sketch(self, seq: bytes) -> builtins.list[Minimizer]:
         r"""
         Extract syncmers from a byte string sequence.
@@ -962,7 +943,6 @@ class CigarOp(enum.Enum):
 
     The values correspond to the official BAM specification.
     """
-
     M = ...
     I = ...
     D = ...
@@ -987,7 +967,6 @@ class Preset(enum.Enum):
         >>> index = Index.build([(b"target1", b"ATGC...")])
         >>> aligner = Aligner(index, preset=Preset.MapOnt)
     """
-
     MapOnt = ...
     MapHifi = ...
     Sr = ...
@@ -1008,7 +987,6 @@ class Strand(enum.Enum):
         Forward: The forward strand.
         Reverse: The reverse complement strand.
     """
-
     Forward = ...
     Reverse = ...
 
@@ -1018,9 +996,7 @@ def parse_fasta_bytes(data: bytes) -> builtins.list[tuple[builtins.str, bytes]]:
     Returns a list of (name, sequence) pairs.
     """
 
-def read_fasta(
-    path: builtins.str | os.PathLike | pathlib.Path,
-) -> builtins.list[tuple[builtins.str, bytes]]:
+def read_fasta(path: builtins.str | os.PathLike | pathlib.Path) -> builtins.list[tuple[builtins.str, bytes]]:
     r"""
     Read all sequences from a FASTA file into memory.
     Returns a list of (name, sequence) pairs.

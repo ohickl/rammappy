@@ -2,12 +2,28 @@ use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pyclass_enum, gen_stub_pymethods};
 use rammap::align::index::Index as RustIndex;
+use rammap::align::map::AlignFlags;
 use rammap::api::{
     Aligner as RustAligner, CigarOp as RustCigarOp, Mapping as RustMapping, Preset as RustPreset,
     Strand as RustStrand,
 };
 use rayon::prelude::*;
+use rayon::{ThreadPool, ThreadPoolBuilder};
 use std::path::PathBuf;
+use std::sync::Arc;
+
+fn thread_pool(threads: usize) -> PyResult<Arc<ThreadPool>> {
+    if threads == 0 {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "threads must be positive",
+        ));
+    }
+    ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .build()
+        .map(Arc::new)
+        .map_err(|error| pyo3::exceptions::PyRuntimeError::new_err(error.to_string()))
+}
 
 /// The mapping presets available in `rammappy`.
 ///
@@ -25,6 +41,7 @@ pub enum Preset {
     MapOnt,
     MapHifi,
     Sr,
+    StrainxpressSrAva,
     Splice,
     Asm5,
     Asm10,
@@ -38,6 +55,7 @@ impl From<Preset> for RustPreset {
             Preset::MapOnt => RustPreset::MapOnt,
             Preset::MapHifi => RustPreset::MapHifi,
             Preset::Sr => RustPreset::Sr,
+            Preset::StrainxpressSrAva => RustPreset::StrainxpressSrAva,
             Preset::Splice => RustPreset::Splice,
             Preset::Asm5 => RustPreset::Asm5,
             Preset::Asm10 => RustPreset::Asm10,
@@ -403,7 +421,7 @@ impl Index {
     /// Returns:
     ///     Index: The built index.
     #[staticmethod]
-    #[pyo3(signature = (seqs, w=10, k=15, is_hpc=false, max_occ=50000))]
+    #[pyo3(signature = (seqs, w=10, k=15, is_hpc=false, max_occ=50000, threads=1))]
     fn build(
         py: Python<'_>,
         seqs: Vec<(Bound<'_, PyBytes>, Bound<'_, PyBytes>)>,
@@ -411,7 +429,8 @@ impl Index {
         k: usize,
         is_hpc: bool,
         max_occ: usize,
-    ) -> Self {
+        threads: usize,
+    ) -> PyResult<Self> {
         let rust_seqs = seqs
             .into_iter()
             .map(|(name, seq)| {
@@ -421,8 +440,9 @@ impl Index {
                 )
             })
             .collect();
-        let inner = py.detach(move || RustIndex::build(rust_seqs, w, k, is_hpc, max_occ));
-        Index { inner }
+        let pool = thread_pool(threads)?;
+        let inner = py.detach(move || pool.install(|| RustIndex::build(rust_seqs, w, k, is_hpc, max_occ)));
+        Ok(Index { inner })
     }
 
     /// Load an index from file.
@@ -548,6 +568,7 @@ impl Index {
 #[pyclass(module = "rammappy._rammappy")]
 pub struct Aligner {
     inner: RustAligner,
+    pool: Arc<ThreadPool>,
 }
 
 unsafe impl Send for Aligner {}
@@ -556,6 +577,52 @@ unsafe impl Sync for Aligner {}
 #[gen_stub_pymethods]
 #[pymethods]
 impl Aligner {
+    /// Build an aligner with the StrainXpress short-read all-vs-all settings.
+    ///
+    /// This mirrors the parent project's Minimap2 contract: short-read mode,
+    /// all chains, no exact diagonal, and the explicit scoring/filter values
+    /// used by its oracle command. The index must already use k=21 and w=11.
+    #[staticmethod]
+    #[pyo3(signature = (index, threads=1))]
+    fn from_strainxpress_sr_ava(
+        index: &Index,
+        threads: usize,
+    ) -> PyResult<Self> {
+        if threads == 0 {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "threads must be positive",
+            ));
+        }
+        if index.inner.kmer_size != 21
+            || index.inner.window_size != 11
+            || index.inner.homopolymer_compressed
+        {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "StrainXpress short-read all-vs-all requires k=21, w=11, and hpc=false",
+            ));
+        }
+        let aligner = Self::new(
+            index,
+            Some(Preset::StrainxpressSrAva),
+            true,
+            false,
+            false,
+            threads,
+        )?;
+        let expected = AlignFlags::SHORT_READ
+            | AlignFlags::NO_DIAG
+            | AlignFlags::ALL_CHAINS
+            | AlignFlags::NO_DUAL
+            | AlignFlags::NO_LJOIN
+            | AlignFlags::OUT_CIGAR;
+        if aligner.inner.options().flags != expected {
+            return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                "rammap core returned an unexpected StrainXpress flag set",
+            ));
+        }
+        Ok(aligner)
+    }
+
     /// Create a new aligner instance using an already built index.
     ///
     /// Args:
@@ -568,15 +635,17 @@ impl Aligner {
     /// Returns:
     ///     Aligner: The initialized aligner object.
     #[new]
-    #[pyo3(signature = (index, preset=Some(Preset::MapOnt), do_cigar=true, do_cs=true, do_md=true))]
+    #[pyo3(signature = (index, preset=Some(Preset::MapOnt), do_cigar=true, do_cs=true, do_md=true, threads=1))]
     fn new(
         index: &Index,
         preset: Option<Preset>,
         do_cigar: bool,
         do_cs: bool,
         do_md: bool,
+        threads: usize,
     ) -> PyResult<Self> {
         let preset_enum: RustPreset = preset.unwrap_or(Preset::MapOnt).into();
+        let pool = thread_pool(threads)?;
 
         let mut buf = Vec::new();
         index
@@ -594,7 +663,7 @@ impl Aligner {
             cfg.do_md = do_md;
         }
 
-        Ok(Aligner { inner })
+        Ok(Aligner { inner, pool })
     }
 
     /// Create an aligner from a FASTA file.
@@ -606,15 +675,22 @@ impl Aligner {
     /// Returns:
     ///     Aligner: The initialized aligner object.
     #[staticmethod]
-    #[pyo3(signature = (path, preset=Some(Preset::MapOnt)))]
-    fn from_fasta(py: Python<'_>, path: PathBuf, preset: Option<Preset>) -> PyResult<Self> {
+    #[pyo3(signature = (path, preset=Some(Preset::MapOnt), threads=1))]
+    fn from_fasta(
+        py: Python<'_>,
+        path: PathBuf,
+        preset: Option<Preset>,
+        threads: usize,
+    ) -> PyResult<Self> {
         let path_str = path
             .to_str()
             .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("Invalid path string"))?
             .to_string();
         let preset_enum: RustPreset = preset.unwrap_or(Preset::MapOnt).into();
-        py.detach(move || RustAligner::from_fasta(&path_str, preset_enum))
-            .map(|inner| Aligner { inner })
+        let pool = thread_pool(threads)?;
+        let build_pool = pool.clone();
+        py.detach(move || build_pool.install(|| RustAligner::from_fasta(&path_str, preset_enum)))
+            .map(|inner| Aligner { inner, pool })
             .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))
     }
 
@@ -627,15 +703,22 @@ impl Aligner {
     /// Returns:
     ///     Aligner: The initialized aligner object.
     #[staticmethod]
-    #[pyo3(signature = (path, preset=Some(Preset::MapOnt)))]
-    fn from_index(py: Python<'_>, path: PathBuf, preset: Option<Preset>) -> PyResult<Self> {
+    #[pyo3(signature = (path, preset=Some(Preset::MapOnt), threads=1))]
+    fn from_index(
+        py: Python<'_>,
+        path: PathBuf,
+        preset: Option<Preset>,
+        threads: usize,
+    ) -> PyResult<Self> {
         let path_str = path
             .to_str()
             .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("Invalid path string"))?
             .to_string();
         let preset_enum: RustPreset = preset.unwrap_or(Preset::MapOnt).into();
-        py.detach(move || RustAligner::from_index(&path_str, preset_enum))
-            .map(|inner| Aligner { inner })
+        let pool = thread_pool(threads)?;
+        let build_pool = pool.clone();
+        py.detach(move || build_pool.install(|| RustAligner::from_index(&path_str, preset_enum)))
+            .map(|inner| Aligner { inner, pool })
             .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))
     }
 
@@ -675,14 +758,15 @@ impl Aligner {
     ///
     /// Returns:
     ///     list[MappingIterator]: A list of iterators, one for each query sequence.
+    #[pyo3(signature = (queries))]
     fn map_batch(
         &self,
         py: Python<'_>,
         queries: Vec<(Bound<'_, PyBytes>, Bound<'_, PyBytes>)>,
     ) -> PyResult<Vec<MappingIterator>> {
-        // Prepare a vector of pointers and lengths (zero-copy)
-        // Since the `Bound<'_, PyBytes>` arguments are held by PyO3 for the duration
-        // of this function call, the bytes they point to will not be freed or modified.
+        // Keep owning Python references alive until every worker has finished.
+        // The detached workers only receive raw pointers because Python objects
+        // cannot be accessed without the GIL.
         struct RawQuery {
             name_ptr: *const u8,
             name_len: usize,
@@ -695,39 +779,134 @@ impl Aligner {
         unsafe impl Send for RawQuery {}
         unsafe impl Sync for RawQuery {}
 
+        let mut owners = Vec::with_capacity(queries.len());
         let mut raw_queries = Vec::with_capacity(queries.len());
         for (name, seq) in queries {
+            let name = name.unbind();
+            let seq = seq.unbind();
+            let name_bytes = name.bind(py);
+            let seq_bytes = seq.bind(py);
             raw_queries.push(RawQuery {
-                name_ptr: name.as_bytes().as_ptr(),
-                name_len: name.as_bytes().len(),
-                seq_ptr: seq.as_bytes().as_ptr(),
-                seq_len: seq.as_bytes().len(),
+                name_ptr: name_bytes.as_bytes().as_ptr(),
+                name_len: name_bytes.as_bytes().len(),
+                seq_ptr: seq_bytes.as_bytes().as_ptr(),
+                seq_len: seq_bytes.as_bytes().len(),
             });
+            owners.push((name, seq));
         }
 
         // Release the GIL via `detach` to allow other Python threads to execute concurrently.
-        let iterators: Vec<MappingIterator> = py.detach(|| {
-            // Utilize `rayon` to spawn multiple worker threads mapping in parallel.
-            raw_queries
-                .par_iter()
-                .map(|raw_q| {
-                    // Safety: Reconstructing the slice is safe because we know the pointer is valid
-                    let name_bytes =
-                        unsafe { std::slice::from_raw_parts(raw_q.name_ptr, raw_q.name_len) };
-                    let seq_bytes =
-                        unsafe { std::slice::from_raw_parts(raw_q.seq_ptr, raw_q.seq_len) };
+        let iterators = py.detach(move || {
+            let _keep_alive = &owners;
+            self.pool.install(|| {
+                let _ = _keep_alive;
+                raw_queries
+                    .par_iter()
+                    .map(|raw_q| {
+                        // Safety: Reconstructing the slice is safe because we know the pointer is valid
+                        let name_bytes =
+                            unsafe { std::slice::from_raw_parts(raw_q.name_ptr, raw_q.name_len) };
+                        let seq_bytes =
+                            unsafe { std::slice::from_raw_parts(raw_q.seq_ptr, raw_q.seq_len) };
 
-                    let query_name_str = String::from_utf8_lossy(name_bytes);
-                    let map_result = self.inner.map_seq(&query_name_str, seq_bytes);
+                        let query_name_str = String::from_utf8_lossy(name_bytes);
+                        let map_result = self.inner.map_seq(&query_name_str, seq_bytes);
 
-                    MappingIterator {
-                        iter: map_result.mappings.into_iter(),
+                        MappingIterator {
+                            iter: map_result.mappings.into_iter(),
+                        }
+                    })
+                    .collect()
+            })
+        });
+        Ok(iterators)
+    }
+
+    /// Map queries into a compact little-endian numeric buffer.
+    ///
+    /// The returned pair is `(records, offsets)`. `records` is a fixed-width
+    /// buffer with 93-byte records; `offsets[i]..offsets[i + 1]` identifies the
+    /// byte range for query `i`. The record fields are query ID, target ID,
+    /// target length, query start/end, target start/end, matches, block
+    /// length, edit distance, score, map quality, and strand. Python callers
+    /// can wrap `records` with `numpy.frombuffer` without per-mapping Python
+    /// objects or a copy.
+    #[pyo3(signature = (queries))]
+    fn map_batch_packed<'py>(
+        &self,
+        py: Python<'py>,
+        queries: Vec<(Bound<'_, PyBytes>, Bound<'_, PyBytes>)>,
+    ) -> PyResult<(Bound<'py, PyBytes>, Vec<u64>)> {
+        struct RawQuery {
+            name_ptr: *const u8,
+            name_len: usize,
+            seq_ptr: *const u8,
+            seq_len: usize,
+        }
+        unsafe impl Send for RawQuery {}
+        unsafe impl Sync for RawQuery {}
+
+        let mut owners = Vec::with_capacity(queries.len());
+        let mut raw_queries = Vec::with_capacity(queries.len());
+        for (name, seq) in queries {
+            let name = name.unbind();
+            let seq = seq.unbind();
+            let name_bytes = name.bind(py);
+            let seq_bytes = seq.bind(py);
+            raw_queries.push(RawQuery {
+                name_ptr: name_bytes.as_bytes().as_ptr(),
+                name_len: name_bytes.as_bytes().len(),
+                seq_ptr: seq_bytes.as_bytes().as_ptr(),
+                seq_len: seq_bytes.as_bytes().len(),
+            });
+            owners.push((name, seq));
+        }
+
+        let packed = py.detach(move || {
+            let _keep_alive = &owners;
+            self.pool.install(|| {
+                let _ = _keep_alive;
+                let per_query: Vec<Vec<RustMapping>> = raw_queries
+                    .par_iter()
+                    .map(|raw_q| {
+                        let name_bytes =
+                            unsafe { std::slice::from_raw_parts(raw_q.name_ptr, raw_q.name_len) };
+                        let seq_bytes =
+                            unsafe { std::slice::from_raw_parts(raw_q.seq_ptr, raw_q.seq_len) };
+                        let query_name_str = String::from_utf8_lossy(name_bytes);
+                        self.inner.map_seq(&query_name_str, seq_bytes).mappings
+                    })
+                    .collect();
+
+                let mut records = Vec::new();
+                let mut offsets = Vec::with_capacity(per_query.len() + 1);
+                offsets.push(0);
+                for (query_id, mappings) in per_query.into_iter().enumerate() {
+                    for mapping in mappings {
+                        records.extend_from_slice(&(query_id as u64).to_le_bytes());
+                        records.extend_from_slice(&(mapping.target_id as u64).to_le_bytes());
+                        records.extend_from_slice(&(mapping.target_len as u64).to_le_bytes());
+                        records.extend_from_slice(&(mapping.query_start as u64).to_le_bytes());
+                        records.extend_from_slice(&(mapping.query_end as u64).to_le_bytes());
+                        records.extend_from_slice(&(mapping.target_start as u64).to_le_bytes());
+                        records.extend_from_slice(&(mapping.target_end as u64).to_le_bytes());
+                        records.extend_from_slice(&(mapping.matches as u64).to_le_bytes());
+                        records.extend_from_slice(&(mapping.block_len as u64).to_le_bytes());
+                        records.extend_from_slice(&(mapping.edit_distance as u64).to_le_bytes());
+                        records.extend_from_slice(&(mapping.score as i64).to_le_bytes());
+                        records.extend_from_slice(&(mapping.mapq as i32).to_le_bytes());
+                        records.push(match mapping.strand {
+                            RustStrand::Forward => 0,
+                            RustStrand::Reverse => 1,
+                        });
                     }
-                })
-                .collect()
+                    offsets.push(records.len() as u64);
+                }
+                (records, offsets)
+            })
         });
 
-        Ok(iterators)
+        Ok((PyBytes::new(py, &packed.0), packed.1))
     }
 
     /// Load splice junctions from a BED file.
@@ -766,8 +945,8 @@ impl Aligner {
     /// Returns:
     ///     MapOptions: A copy of the current mapping options.
     #[getter]
-    fn options(&self) -> PyResult<crate::options::PyMapOptions> {
-        Ok(self.inner.options().clone().into())
+    fn options(&self, py: Python<'_>) -> PyResult<crate::options::PyMapOptions> {
+        crate::options::PyMapOptions::from_map(py, self.inner.options().clone())
     }
 
     /// Set the mapping options.
@@ -775,8 +954,13 @@ impl Aligner {
     /// Args:
     ///     opts (MapOptions): The new mapping options to apply.
     #[setter]
-    fn set_options(&mut self, opts: crate::options::PyMapOptions) -> PyResult<()> {
-        *self.inner.options_mut() = opts.into();
+    fn set_options(
+        &mut self,
+        opts: &Bound<'_, crate::options::PyMapOptions>,
+    ) -> PyResult<()> {
+        let options = opts.borrow().into_map(opts.py());
+        self.inner.output_config_mut().do_cigar = options.flags.contains(AlignFlags::OUT_CIGAR);
+        *self.inner.options_mut() = options;
         Ok(())
     }
 

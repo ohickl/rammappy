@@ -1,4 +1,5 @@
 from ._rammappy import (
+    AlignFlags,
     Aligner,
     CigarElement,
     CigarOp,
@@ -10,6 +11,7 @@ from ._rammappy import (
 )
 
 __all__ = [
+    "AlignFlags",
     "Aligner",
     "Preset",
     "Mapping",
