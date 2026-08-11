@@ -21,9 +21,7 @@ extension-module = ["pyo3/extension-module"]
 [dependencies]
 pyo3 = { version = "0.29.0", features = ["abi3-py310"] }
 pyo3-stub-gen = "0.23.0"
-# The ignored checkout is the controlled rammap fork used for local validation.
-# Release packaging must replace this with the immutable published fork revision.
-rammap-core = { path = "../rammap/rammap-core" }
+rammap-core = { git = "https://github.com/ohickl/rammap.git", rev = "8ac04c01be1a3676e4bf6431fa220ba5333a9183" }
 rayon = "1.10"
 
 [[bin]]
