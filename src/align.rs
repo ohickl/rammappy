@@ -36,7 +36,7 @@ fn thread_pool(threads: usize) -> PyResult<Arc<ThreadPool>> {
 }
 
 const PARTITION_CAPABILITY_DESCRIPTOR: &str =
-    "sx-native-partition-v1|xc-independent-occurrence-v1|occurrence-fasta-v1|project-bridge-admitted-v1";
+    "sx-native-partition-v2|xc-independent-occurrence-v1|occurrence-fasta-v1|project-bridge-candidate-v2";
 
 /// The mapping presets available in `rammappy`.
 ///
@@ -837,7 +837,7 @@ impl Aligner {
         index_max_occ: usize,
         mid_occ_frac: f32,
         resume: bool,
-    ) -> PyResult<(u32, u64, usize, u64)> {
+    ) -> PyResult<(u32, u64, usize, u64, u64, u64, u64, u64)> {
         let parameter_digest = digest32(parameter_digest, "parameter_digest")?;
         let target_digest = digest32(target_digest, "target_digest")?;
         let query_digest = digest32(query_digest, "query_digest")?;
@@ -900,7 +900,7 @@ impl Aligner {
         index_max_occ: usize,
         mid_occ_frac: f32,
         resume: bool,
-    ) -> PyResult<(u32, u64, usize, u64)> {
+    ) -> PyResult<(u32, u64, usize, u64, u64, u64, u64, u64)> {
         let parameter_digest = digest32(parameter_digest, "parameter_digest")?;
         let target_digest = digest32(target_digest, "target_digest")?;
         let query_digest = digest32(query_digest, "query_digest")?;
