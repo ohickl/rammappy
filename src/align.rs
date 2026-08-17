@@ -3,6 +3,10 @@ use pyo3::types::PyBytes;
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pyclass_enum, gen_stub_pymethods};
 use rammap::align::index::Index as RustIndex;
 use rammap::align::map::AlignFlags;
+use rammap::align::occurrence_sidecar::{
+    OccurrenceRecord, OccurrenceSidecarMetadata, OccurrenceSidecarWriter,
+};
+use rammap::align::partition::{map_partitioned_fasta_to_paf, PartitionedMapConfig};
 use rammap::api::{
     Aligner as RustAligner, CigarOp as RustCigarOp, Mapping as RustMapping, Preset as RustPreset,
     Strand as RustStrand,
@@ -11,6 +15,12 @@ use rayon::prelude::*;
 use rayon::{ThreadPool, ThreadPoolBuilder};
 use std::path::PathBuf;
 use std::sync::Arc;
+
+fn digest32(value: &Bound<'_, PyBytes>, name: &str) -> PyResult<[u8; 32]> {
+    value.as_bytes().try_into().map_err(|_| {
+        pyo3::exceptions::PyValueError::new_err(format!("{name} must contain exactly 32 bytes"))
+    })
+}
 
 fn thread_pool(threads: usize) -> PyResult<Arc<ThreadPool>> {
     if threads == 0 {
@@ -441,8 +451,89 @@ impl Index {
             })
             .collect();
         let pool = thread_pool(threads)?;
-        let inner = py.detach(move || pool.install(|| RustIndex::build(rust_seqs, w, k, is_hpc, max_occ)));
+        let inner =
+            py.detach(move || pool.install(|| RustIndex::build(rust_seqs, w, k, is_hpc, max_occ)));
         Ok(Index { inner })
+    }
+
+    /// Build an index by streaming a FASTA/FASTQ file without materializing
+    /// all target records in Python. If `occurrence_counts` is supplied, the
+    /// native builder writes a versioned pre-cap occurrence sidecar while the
+    /// index is finalized.
+    #[staticmethod]
+    #[pyo3(signature = (path, w=10, k=15, is_hpc=false, max_occ=50000, threads=1, occurrence_counts=None))]
+    fn build_fasta(
+        py: Python<'_>,
+        path: PathBuf,
+        w: usize,
+        k: usize,
+        is_hpc: bool,
+        max_occ: usize,
+        threads: usize,
+        occurrence_counts: Option<PathBuf>,
+    ) -> PyResult<Self> {
+        let path = path
+            .to_str()
+            .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("Invalid path string"))?
+            .to_string();
+        let pool = thread_pool(threads)?;
+        let inner = py.detach(move || {
+            pool.install(|| {
+                let mut sidecar = if let Some(path) = occurrence_counts.as_ref() {
+                    let file = std::fs::File::create(path)
+                        .map_err(|error| pyo3::exceptions::PyIOError::new_err(error.to_string()))?;
+                    Some(
+                        OccurrenceSidecarWriter::new(
+                            file,
+                            OccurrenceSidecarMetadata {
+                                bucket_bits: 10u32.min((2 * k) as u32),
+                                shard_id: 0,
+                                shard_count: 1,
+                                parameter_digest: [0; 32],
+                                target_digest: [0; 32],
+                            },
+                        )
+                        .map_err(|error| pyo3::exceptions::PyIOError::new_err(error.to_string()))?,
+                    )
+                } else {
+                    None
+                };
+                let mut sidecar_error = None;
+                let index = RustIndex::build_fasta_with_occurrence_counts(
+                    &path,
+                    w,
+                    k,
+                    is_hpc,
+                    max_occ,
+                    |bucket, hash, count| {
+                        if sidecar_error.is_none() {
+                            if let Some(writer) = sidecar.as_mut() {
+                                if let Err(error) = writer.write_record(OccurrenceRecord {
+                                    bucket,
+                                    hash,
+                                    count,
+                                }) {
+                                    sidecar_error = Some(error);
+                                }
+                            }
+                        }
+                    },
+                )
+                .map_err(|error| pyo3::exceptions::PyIOError::new_err(error.to_string()))?;
+                if let Some(error) = sidecar_error {
+                    return Err(pyo3::exceptions::PyIOError::new_err(error.to_string()));
+                }
+                if let Some(writer) = sidecar {
+                    let file = writer
+                        .finish()
+                        .map_err(|error| pyo3::exceptions::PyIOError::new_err(error.to_string()))?;
+                    file.sync_all()
+                        .map_err(|error| pyo3::exceptions::PyIOError::new_err(error.to_string()))?;
+                }
+                Ok(Index { inner: index })
+            })
+        });
+        inner
     }
 
     /// Load an index from file.
@@ -584,10 +675,7 @@ impl Aligner {
     /// used by its oracle command. The index must already use k=21 and w=11.
     #[staticmethod]
     #[pyo3(signature = (index, threads=1))]
-    fn from_strainxpress_sr_ava(
-        index: &Index,
-        threads: usize,
-    ) -> PyResult<Self> {
+    fn from_strainxpress_sr_ava(index: &Index, threads: usize) -> PyResult<Self> {
         if threads == 0 {
             return Err(pyo3::exceptions::PyValueError::new_err(
                 "threads must be positive",
@@ -720,6 +808,59 @@ impl Aligner {
         py.detach(move || build_pool.install(|| RustAligner::from_index(&path_str, preset_enum)))
             .map(|inner| Aligner { inner, pool })
             .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))
+    }
+
+    /// Map a query FASTA/FASTQ against target FASTA shards through the native
+    /// raw-candidate spool and one global finalization pass.
+    ///
+    /// The three 32-byte digests are caller-authenticated identities for the
+    /// immutable parameters, target catalog, and query stream. The method
+    /// returns `(shard_count, query_count, mid_occ, output_bytes)`.
+    #[pyo3(signature = (target_paths, query_path, output_path, spool_dir, parameter_digest, target_digest, query_digest, index_max_occ=50000, mid_occ_frac=0.0002))]
+    fn map_partitioned_fasta_to_paf(
+        &self,
+        py: Python<'_>,
+        target_paths: Vec<PathBuf>,
+        query_path: PathBuf,
+        output_path: PathBuf,
+        spool_dir: PathBuf,
+        parameter_digest: &Bound<'_, PyBytes>,
+        target_digest: &Bound<'_, PyBytes>,
+        query_digest: &Bound<'_, PyBytes>,
+        index_max_occ: usize,
+        mid_occ_frac: f32,
+    ) -> PyResult<(u32, u64, usize, u64)> {
+        let parameter_digest = digest32(parameter_digest, "parameter_digest")?;
+        let target_digest = digest32(target_digest, "target_digest")?;
+        let query_digest = digest32(query_digest, "query_digest")?;
+        let config = PartitionedMapConfig {
+            target_paths,
+            query_path,
+            output_path,
+            spool_dir,
+            k: self.inner.index().kmer_size,
+            w: self.inner.index().window_size,
+            is_hpc: self.inner.index().homopolymer_compressed,
+            index_max_occ,
+            mid_occ_frac,
+            options: self.inner.options().clone(),
+            output: self.inner.output_config().clone(),
+            parameter_digest,
+            target_digest,
+            query_digest,
+        };
+        py.detach(move || {
+            map_partitioned_fasta_to_paf(&config)
+                .map(|receipt| {
+                    (
+                        receipt.shard_count,
+                        receipt.query_count,
+                        receipt.mid_occ,
+                        receipt.output_bytes,
+                    )
+                })
+                .map_err(|error| pyo3::exceptions::PyIOError::new_err(error.to_string()))
+        })
     }
 
     /// Maps a single query sequence sequentially to the targets.
@@ -954,10 +1095,7 @@ impl Aligner {
     /// Args:
     ///     opts (MapOptions): The new mapping options to apply.
     #[setter]
-    fn set_options(
-        &mut self,
-        opts: &Bound<'_, crate::options::PyMapOptions>,
-    ) -> PyResult<()> {
+    fn set_options(&mut self, opts: &Bound<'_, crate::options::PyMapOptions>) -> PyResult<()> {
         let options = opts.borrow().into_map(opts.py());
         self.inner.output_config_mut().do_cigar = options.flags.contains(AlignFlags::OUT_CIGAR);
         *self.inner.options_mut() = options;
