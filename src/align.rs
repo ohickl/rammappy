@@ -36,7 +36,7 @@ fn thread_pool(threads: usize) -> PyResult<Arc<ThreadPool>> {
 }
 
 const PARTITION_CAPABILITY_DESCRIPTOR: &str =
-    "sx-native-partition-v1|xc-independent-occurrence-v1|occurrence-fasta-v1|project-bridge-pending";
+    "sx-native-partition-v1|xc-independent-occurrence-v1|occurrence-fasta-v1|project-bridge-admitted-v1";
 
 /// The mapping presets available in `rammappy`.
 ///
@@ -667,9 +667,8 @@ unsafe impl Sync for Aligner {}
 #[gen_stub_pymethods]
 #[pymethods]
 impl Aligner {
-    /// Describe the native partition contract without implying project
-    /// admission. The final component remains `project-bridge-pending` until
-    /// the project adapter and scale gates are independently qualified.
+    /// Describe the native partition contract and its source-bound project
+    /// adapter admission level.
     #[staticmethod]
     fn partitioned_capability_descriptor() -> &'static str {
         PARTITION_CAPABILITY_DESCRIPTOR
