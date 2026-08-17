@@ -821,7 +821,8 @@ impl Aligner {
     ///
     /// The three 32-byte digests are caller-authenticated identities for the
     /// immutable parameters, target catalog, and query stream. The method
-    /// returns `(shard_count, query_count, mid_occ, output_bytes)`.
+    /// returns `(shard_count, query_count, mid_occ, output_bytes,
+    /// output_checksum, policy_bytes, policy_checksum, policy_records)`.
     #[pyo3(signature = (target_paths, query_path, output_path, spool_dir, parameter_digest, target_digest, query_digest, index_max_occ=50000, mid_occ_frac=0.0002, resume=false))]
     fn map_partitioned_fasta_to_paf(
         &self,
@@ -865,6 +866,10 @@ impl Aligner {
                         receipt.query_count,
                         receipt.mid_occ,
                         receipt.output_bytes,
+                        receipt.output_checksum,
+                        receipt.policy_bytes,
+                        receipt.policy_checksum,
+                        receipt.policy_records,
                     )
                 })
                 .map_err(|error| pyo3::exceptions::PyIOError::new_err(error.to_string()))
@@ -877,7 +882,8 @@ impl Aligner {
     /// This is deliberately a fixed StrainXpress short-read all-vs-all
     /// operation. The caller supplies authenticated identities for the exact
     /// parameters, target projection, and query stream. The returned tuple is
-    /// `(shard_count, query_count, mid_occ, output_bytes)`; the durable native
+    /// `(shard_count, query_count, mid_occ, output_bytes, output_checksum,
+    /// policy_bytes, policy_checksum, policy_records)`; the durable native
     /// manifest remains the source of the complete transaction receipt.
     #[staticmethod]
     #[pyo3(signature = (target_paths, query_path, output_path, spool_dir, parameter_digest, target_digest, query_digest, threads=1, index_max_occ=50000, mid_occ_frac=0.0002, resume=false))]
@@ -930,6 +936,10 @@ impl Aligner {
                         receipt.query_count,
                         receipt.mid_occ,
                         receipt.output_bytes,
+                        receipt.output_checksum,
+                        receipt.policy_bytes,
+                        receipt.policy_checksum,
+                        receipt.policy_records,
                     )
                 })
                 .map_err(|error| pyo3::exceptions::PyIOError::new_err(error.to_string()))
