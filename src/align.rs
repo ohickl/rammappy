@@ -812,7 +812,7 @@ impl Aligner {
     /// The three 32-byte digests are caller-authenticated identities for the
     /// immutable parameters, target catalog, and query stream. The method
     /// returns `(shard_count, query_count, mid_occ, output_bytes)`.
-    #[pyo3(signature = (target_paths, query_path, output_path, spool_dir, parameter_digest, target_digest, query_digest, index_max_occ=50000, mid_occ_frac=0.0002))]
+    #[pyo3(signature = (target_paths, query_path, output_path, spool_dir, parameter_digest, target_digest, query_digest, index_max_occ=50000, mid_occ_frac=0.0002, resume=false))]
     fn map_partitioned_fasta_to_paf(
         &self,
         py: Python<'_>,
@@ -825,6 +825,7 @@ impl Aligner {
         query_digest: &Bound<'_, PyBytes>,
         index_max_occ: usize,
         mid_occ_frac: f32,
+        resume: bool,
     ) -> PyResult<(u32, u64, usize, u64)> {
         let parameter_digest = digest32(parameter_digest, "parameter_digest")?;
         let target_digest = digest32(target_digest, "target_digest")?;
@@ -844,6 +845,7 @@ impl Aligner {
             parameter_digest,
             target_digest,
             query_digest,
+            resume,
         };
         py.detach(move || {
             map_partitioned_fasta_to_paf(&config)
