@@ -8,8 +8,8 @@ use rammap::align::occurrence_sidecar::{
 };
 use rammap::align::partition::{map_partitioned_fasta_to_paf, PartitionedMapConfig};
 use rammap::api::{
-    Aligner as RustAligner, CigarOp as RustCigarOp, Mapping as RustMapping, Preset as RustPreset,
-    Strand as RustStrand,
+    strainxpress_sr_ava_config, Aligner as RustAligner, CigarOp as RustCigarOp,
+    Mapping as RustMapping, Preset as RustPreset, Strand as RustStrand,
 };
 use rayon::prelude::*;
 use rayon::{ThreadPool, ThreadPoolBuilder};
@@ -34,6 +34,9 @@ fn thread_pool(threads: usize) -> PyResult<Arc<ThreadPool>> {
         .map(Arc::new)
         .map_err(|error| pyo3::exceptions::PyRuntimeError::new_err(error.to_string()))
 }
+
+const PARTITION_CAPABILITY_DESCRIPTOR: &str =
+    "sx-native-partition-v1|xc-independent-occurrence-v1|occurrence-fasta-v1|project-bridge-pending";
 
 /// The mapping presets available in `rammappy`.
 ///
@@ -664,6 +667,14 @@ unsafe impl Sync for Aligner {}
 #[gen_stub_pymethods]
 #[pymethods]
 impl Aligner {
+    /// Describe the native partition contract without implying project
+    /// admission. The final component remains `project-bridge-pending` until
+    /// the project adapter and scale gates are independently qualified.
+    #[staticmethod]
+    fn partitioned_capability_descriptor() -> &'static str {
+        PARTITION_CAPABILITY_DESCRIPTOR
+    }
+
     /// Build an aligner with the StrainXpress short-read all-vs-all settings.
     ///
     /// This mirrors the parent project's Minimap2 contract: short-read mode,
@@ -849,6 +860,67 @@ impl Aligner {
         };
         py.detach(move || {
             map_partitioned_fasta_to_paf(&config)
+                .map(|receipt| {
+                    (
+                        receipt.shard_count,
+                        receipt.query_count,
+                        receipt.mid_occ,
+                        receipt.output_bytes,
+                    )
+                })
+                .map_err(|error| pyo3::exceptions::PyIOError::new_err(error.to_string()))
+        })
+    }
+
+    /// Map independent occurrence queries against target FASTA shards through
+    /// the native resumable transaction without constructing an `Aligner`.
+    ///
+    /// This is deliberately a fixed StrainXpress short-read all-vs-all
+    /// operation. The caller supplies authenticated identities for the exact
+    /// parameters, target projection, and query stream. The returned tuple is
+    /// `(shard_count, query_count, mid_occ, output_bytes)`; the durable native
+    /// manifest remains the source of the complete transaction receipt.
+    #[staticmethod]
+    #[pyo3(signature = (target_paths, query_path, output_path, spool_dir, parameter_digest, target_digest, query_digest, threads=1, index_max_occ=50000, mid_occ_frac=0.0002, resume=false))]
+    fn map_partitioned_fasta_to_paf_resumable(
+        py: Python<'_>,
+        target_paths: Vec<PathBuf>,
+        query_path: PathBuf,
+        output_path: PathBuf,
+        spool_dir: PathBuf,
+        parameter_digest: &Bound<'_, PyBytes>,
+        target_digest: &Bound<'_, PyBytes>,
+        query_digest: &Bound<'_, PyBytes>,
+        threads: usize,
+        index_max_occ: usize,
+        mid_occ_frac: f32,
+        resume: bool,
+    ) -> PyResult<(u32, u64, usize, u64)> {
+        let parameter_digest = digest32(parameter_digest, "parameter_digest")?;
+        let target_digest = digest32(target_digest, "target_digest")?;
+        let query_digest = digest32(query_digest, "query_digest")?;
+        let pool = thread_pool(threads)?;
+        let (options, output) = strainxpress_sr_ava_config(21, 11, false, 0)
+            .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?;
+        let config = PartitionedMapConfig {
+            target_paths,
+            query_path,
+            output_path,
+            spool_dir,
+            k: 21,
+            w: 11,
+            is_hpc: false,
+            index_max_occ,
+            mid_occ_frac,
+            options,
+            output,
+            parameter_digest,
+            target_digest,
+            query_digest,
+            resume,
+        };
+        py.detach(move || {
+            pool.install(|| map_partitioned_fasta_to_paf(&config))
                 .map(|receipt| {
                     (
                         receipt.shard_count,
