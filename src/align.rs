@@ -899,7 +899,11 @@ impl Aligner {
         let target_digest = digest32(target_digest, "target_digest")?;
         let query_digest = digest32(query_digest, "query_digest")?;
         let pool = thread_pool(threads)?;
-        let (options, output) = strainxpress_sr_ava_config(21, 11, false, 0)
+        // The partition transaction recalibrates mid_occ from authenticated
+        // occurrence sidecars.  The preset constructor nevertheless requires
+        // a positive initial value, so use its locked short-read default as a
+        // bootstrap value before the transaction overwrites it.
+        let (options, output) = strainxpress_sr_ava_config(21, 11, false, 1000)
             .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?;
         let config = PartitionedMapConfig {
             target_paths,
