@@ -479,36 +479,30 @@ impl Index {
         let pool = thread_pool(threads)?;
         let inner = py.detach(move || {
             pool.install(|| {
-                let mut sidecar = if let Some(path) = occurrence_counts.as_ref() {
-                    let file = std::fs::File::create(path)
+                let index = if let Some(sidecar_path) = occurrence_counts.as_ref() {
+                    let file = std::fs::File::create(sidecar_path)
                         .map_err(|error| pyo3::exceptions::PyIOError::new_err(error.to_string()))?;
-                    Some(
-                        OccurrenceSidecarWriter::new(
-                            file,
-                            OccurrenceSidecarMetadata {
-                                bucket_bits: 10u32.min((2 * k) as u32),
-                                shard_id: 0,
-                                shard_count: 1,
-                                parameter_digest: [0; 32],
-                                target_digest: [0; 32],
-                            },
-                        )
-                        .map_err(|error| pyo3::exceptions::PyIOError::new_err(error.to_string()))?,
+                    let mut sidecar = OccurrenceSidecarWriter::new(
+                        file,
+                        OccurrenceSidecarMetadata {
+                            bucket_bits: 10u32.min((2 * k) as u32),
+                            shard_id: 0,
+                            shard_count: 1,
+                            parameter_digest: [0; 32],
+                            target_digest: [0; 32],
+                        },
                     )
-                } else {
-                    None
-                };
-                let mut sidecar_error = None;
-                let index = RustIndex::build_fasta_with_occurrence_counts(
-                    &path,
-                    w,
-                    k,
-                    is_hpc,
-                    max_occ,
-                    |bucket, hash, count| {
-                        if sidecar_error.is_none() {
-                            if let Some(writer) = sidecar.as_mut() {
-                                if let Err(error) = writer.write_record(OccurrenceRecord {
+                    .map_err(|error| pyo3::exceptions::PyIOError::new_err(error.to_string()))?;
+                    let mut sidecar_error = None;
+                    let index = RustIndex::build_fasta_with_occurrence_counts(
+                        &path,
+                        w,
+                        k,
+                        is_hpc,
+                        max_occ,
+                        |bucket, hash, count| {
+                            if sidecar_error.is_none() {
+                                if let Err(error) = sidecar.write_record(OccurrenceRecord {
                                     bucket,
                                     hash,
                                     count,
@@ -516,20 +510,22 @@ impl Index {
                                     sidecar_error = Some(error);
                                 }
                             }
-                        }
-                    },
-                )
-                .map_err(|error| pyo3::exceptions::PyIOError::new_err(error.to_string()))?;
-                if let Some(error) = sidecar_error {
-                    return Err(pyo3::exceptions::PyIOError::new_err(error.to_string()));
-                }
-                if let Some(writer) = sidecar {
-                    let file = writer
+                        },
+                    )
+                    .map_err(|error| pyo3::exceptions::PyIOError::new_err(error.to_string()))?;
+                    if let Some(error) = sidecar_error {
+                        return Err(pyo3::exceptions::PyIOError::new_err(error.to_string()));
+                    }
+                    sidecar
                         .finish()
+                        .map_err(|error| pyo3::exceptions::PyIOError::new_err(error.to_string()))?
+                        .sync_all()
                         .map_err(|error| pyo3::exceptions::PyIOError::new_err(error.to_string()))?;
-                    file.sync_all()
-                        .map_err(|error| pyo3::exceptions::PyIOError::new_err(error.to_string()))?;
-                }
+                    index
+                } else {
+                    RustIndex::build_fasta(&path, w, k, is_hpc, max_occ)
+                        .map_err(|error| pyo3::exceptions::PyIOError::new_err(error.to_string()))?
+                };
                 Ok(Index { inner: index })
             })
         });
