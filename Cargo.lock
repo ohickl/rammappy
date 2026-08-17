@@ -666,7 +666,7 @@ dependencies = [
 [[package]]
 name = "rammap-core"
 version = "1.1.2"
-source = "git+https://github.com/ohickl/rammap.git?rev=3d8df64#3d8df64793524b308492e5f5aea085b4c58c4efa"
+source = "git+https://github.com/ohickl/rammap.git?rev=1c08b36#1c08b367d46d0d5478ff7101735ee5651c984e67"
 dependencies = [
  "anyhow",
  "bincode",
