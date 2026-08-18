@@ -54,7 +54,7 @@ pub enum Preset {
     MapOnt,
     MapHifi,
     Sr,
-    StrainxpressSrAva,
+    StrainXpressSrAva,
     Splice,
     Asm5,
     Asm10,
@@ -68,7 +68,7 @@ impl From<Preset> for RustPreset {
             Preset::MapOnt => RustPreset::MapOnt,
             Preset::MapHifi => RustPreset::MapHifi,
             Preset::Sr => RustPreset::Sr,
-            Preset::StrainxpressSrAva => RustPreset::StrainxpressSrAva,
+            Preset::StrainXpressSrAva => RustPreset::StrainXpressSrAva,
             Preset::Splice => RustPreset::Splice,
             Preset::Asm5 => RustPreset::Asm5,
             Preset::Asm10 => RustPreset::Asm10,
@@ -697,7 +697,7 @@ impl Aligner {
         }
         let aligner = Self::new(
             index,
-            Some(Preset::StrainxpressSrAva),
+            Some(Preset::StrainXpressSrAva),
             true,
             false,
             false,
